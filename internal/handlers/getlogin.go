@@ -5,16 +5,15 @@ import (
 	"net/http"
 )
 
-type GetLoginHandler struct{}
+type LoginHandler struct{}
 
-func NewGetLoginHandler() *GetLoginHandler {
-	return &GetLoginHandler{}
+func NewLoginHandler() *LoginHandler {
+	return &LoginHandler{}
 }
 
-func (h *GetLoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *LoginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := templates.Login("Login")
-	err := templates.Layout(c, "My website").Render(r.Context(), w)
-
+	err := templates.Layout(c, "Login").Render(r.Context(), w)
 	if err != nil {
 		http.Error(w, "Error rendering template", http.StatusInternalServerError)
 		return

@@ -1,10 +1,10 @@
 package templates
 
-templ Index(email string) {
+templ Index(email string, profilePicUrl string) {
 		<div>
 		Welcome {email}
 		</div>
-
+		<img src={profilePicUrl} alt="">
 }
 
 templ GuestIndex() {

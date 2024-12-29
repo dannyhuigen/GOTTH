@@ -3,11 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"goth/internal/config"
+	"goth/internal/database"
 	"goth/internal/handlers"
-	"goth/internal/hash/passwordhash"
-	database "goth/internal/store/db"
-	"goth/internal/store/dbstore"
+	"goth/internal/store"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +19,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 /*
@@ -30,6 +32,14 @@ var Environment = "development"
 
 func init() {
 	os.Setenv("env", Environment)
+
+	log.Printf("Loading env file\n")
+	if err := godotenv.Load(); err != nil {
+		if err := godotenv.Load("/etc/.env"); err != nil {
+			log.Fatalf("Error loading .env file: %v", err)
+		}
+	}
+
 	// run generate script
 	exec.Command("make", "tailwind-build").Run()
 }
@@ -38,61 +48,46 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	r := chi.NewRouter()
 
-	cfg := config.MustLoadConfig()
+	//cfg := config.MustLoadConfig()
 
-	db := database.MustOpen(cfg.DatabaseName)
-	passwordhash := passwordhash.NewHPasswordHash()
+	//db := database.MustOpen(cfg.DatabaseName)
+	//passwordhash := passwordhash.NewHPasswordHash()
 
-	userStore := dbstore.NewUserStore(
-		dbstore.NewUserStoreParams{
-			DB:           db,
-			PasswordHash: passwordhash,
-		},
-	)
+	//userStore := dbstore.NewUserStore(
+	//	dbstore.NewUserStoreParams{
+	//		DB:           db,
+	//		PasswordHash: passwordhash,
+	//	},
+	//)
 
-	sessionStore := dbstore.NewSessionStore(
-		dbstore.NewSessionStoreParams{
-			DB: db,
-		},
-	)
+	//sessionStore := dbstore.NewSessionStore(
+	//	dbstore.NewSessionStoreParams{
+	//		DB: db,
+	//	},
+	//)
 
 	fileServer := http.FileServer(http.Dir("./static"))
 	r.Handle("/static/*", http.StripPrefix("/static/", fileServer))
 
-	authMiddleware := m.NewAuthMiddleware(sessionStore, cfg.SessionCookieName)
+	var googleUserStore = store.NewGoogleUserPostgresStore(database.GetSqlXConnection())
+	var googleAuthHandler = handlers.NewGoogleAuthHandler(googleUserStore)
+	var sessionMiddleware = m.NewSessionMiddleware(googleUserStore)
 
 	r.Group(func(r chi.Router) {
 		r.Use(
 			middleware.Logger,
-			m.TextHTMLMiddleware,
-			m.CSPMiddleware,
-			authMiddleware.AddUserToContext,
 		)
+		r.Get("/auth/google/start", googleAuthHandler.StartGoogleOAuth)
+		r.Get("/auth/google/callback", googleAuthHandler.HandleGoogleCallback)
+	})
 
-		r.NotFound(handlers.NewNotFoundHandler().ServeHTTP)
-
+	r.Group(func(r chi.Router) {
+		r.Use(
+			middleware.Logger,
+			sessionMiddleware.AddUserToContextMiddleware,
+		)
 		r.Get("/", handlers.NewHomeHandler().ServeHTTP)
-
-		r.Get("/about", handlers.NewAboutHandler().ServeHTTP)
-
-		r.Get("/register", handlers.NewGetRegisterHandler().ServeHTTP)
-
-		r.Post("/register", handlers.NewPostRegisterHandler(handlers.PostRegisterHandlerParams{
-			UserStore: userStore,
-		}).ServeHTTP)
-
-		r.Get("/login", handlers.NewGetLoginHandler().ServeHTTP)
-
-		r.Post("/login", handlers.NewPostLoginHandler(handlers.PostLoginHandlerParams{
-			UserStore:         userStore,
-			SessionStore:      sessionStore,
-			PasswordHash:      passwordhash,
-			SessionCookieName: cfg.SessionCookieName,
-		}).ServeHTTP)
-
-		r.Post("/logout", handlers.NewPostLogoutHandler(handlers.PostLogoutHandlerParams{
-			SessionCookieName: cfg.SessionCookieName,
-		}).ServeHTTP)
+		r.Get("/login", handlers.NewLoginHandler().ServeHTTP)
 	})
 
 	killSig := make(chan os.Signal, 1)
@@ -100,24 +95,25 @@ func main() {
 	signal.Notify(killSig, os.Interrupt, syscall.SIGTERM)
 
 	srv := &http.Server{
-		Addr:    cfg.Port,
+		Addr:    ":2626",
 		Handler: r,
 	}
 
 	go func() {
-		err := srv.ListenAndServe()
-
+		// Start the server with HTTPS (using a self-signed cert here)
+		err := srv.ListenAndServeTLS("server.crt", "server.key")
 		if errors.Is(err, http.ErrServerClosed) {
+			// If the server was closed gracefully, log the info message
 			logger.Info("Server shutdown complete")
 		} else if err != nil {
+			// Log other errors (e.g., if the server fails to start)
 			logger.Error("Server error", slog.Any("err", err))
 			os.Exit(1)
 		}
 	}()
 
-	logger.Info("Server started", slog.String("port", cfg.Port), slog.String("env", Environment))
+	logger.Info("Server started", slog.String("port", os.Getenv("FRONTEND_PORT")), slog.String("env", Environment))
 	<-killSig
-
 	logger.Info("Shutting down server")
 
 	// Create a context with a timeout for shutdown
